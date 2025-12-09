@@ -42,9 +42,9 @@ runs:
         driver: docker-container    # Use host daemon so images are visible to docker inspect
 
     # Ensure we are on the default Docker context so start-cli can inspect images
-    - name: Ensure default Docker context
-      run: docker context use default
-      shell: bash
+    # - name: Ensure default Docker context
+    #   run: docker context use default
+    #   shell: bash
 
     - name: Install start-cli
       run: |
