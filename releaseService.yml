@@ -1,9 +1,30 @@
+# StartOS 0.4.x Release Service Workflow
+#
+# Drop this file into .github/workflows/ in your StartOS package repository
+# to enable automated releases when you push a version tag.
+#
+# Usage:
+#   git tag v1.0.0
+#   git push origin v1.0.0
+#
+# This will automatically:
+# - Build the .s9pk package
+# - Generate SHA256 checksum
+# - Create a GitHub release with release notes from manifest
+# - Optionally publish to a StartOS registry (if secrets are configured)
+#
+# Registry Publishing (optional):
+# Set these repository secrets to enable publishing:
+# - S9USER: Your registry username
+# - S9PASS: Your registry password
+# - S9REGISTRY: Registry address (e.g., registry.start9.com, no https:// prefix)
+
 name: Release Service
 
 on:
   push:
     tags:
-      - 'v*.*'
+      - "v*.*"
 
 jobs:
   ReleasePackage:
@@ -12,39 +33,51 @@ jobs:
       contents: write
     steps:
       - name: Prepare StartOS SDK
-        uses: Start9Labs/sdk@v1
+        uses: jeffreymsimon/start9-build_wrapper@main
 
       - name: Checkout services repository
         uses: actions/checkout@v4
 
+      - name: Install npm dependencies
+        run: npm ci
+
       - name: Build the service package
         run: |
           git submodule update --init --recursive
-          start-sdk init
           make
 
-      - name: Setting package ID and title from the manifest
+      - name: Get package info
         id: package
         run: |
-          echo "package_id=$(yq -oy ".id" manifest.*)" >> $GITHUB_ENV
-          echo "package_title=$(yq -oy ".title" manifest.*)" >> $GITHUB_ENV
+          S9PK=$(ls -t *.s9pk 2>/dev/null | head -1)
+          if [ -z "$S9PK" ]; then
+            echo "Error: No .s9pk file found after build"
+            exit 1
+          fi
+          MANIFEST=$(start-cli s9pk inspect "$S9PK" manifest)
+          echo "s9pk=$S9PK" >> $GITHUB_ENV
+          echo "package_id=$(echo "$MANIFEST" | jq -r '.id')" >> $GITHUB_ENV
+          echo "package_title=$(echo "$MANIFEST" | jq -r '.title')" >> $GITHUB_ENV
+          echo "release_notes=$(echo "$MANIFEST" | jq -r '.releaseNotes // "No release notes provided."')" >> $GITHUB_ENV
         shell: bash
 
       - name: Generate sha256 checksum
         run: |
-          PACKAGE_ID=${{ env.package_id }}
-          printf "\n SHA256SUM: $(sha256sum ${PACKAGE_ID}.s9pk) \n"
-          sha256sum ${PACKAGE_ID}.s9pk > ${PACKAGE_ID}.s9pk.sha256
+          S9PK="${{ env.s9pk }}"
+          printf "\n SHA256SUM: $(sha256sum ${S9PK}) \n"
+          sha256sum ${S9PK} > ${S9PK}.sha256
         shell: bash
 
       - name: Generate changelog
         run: |
-          PACKAGE_ID=${{ env.package_id }}
+          S9PK="${{ env.s9pk }}"
           echo "## What's Changed" > change-log.txt
-          yq -oy '.release-notes' manifest.* >> change-log.txt
+          echo "" >> change-log.txt
+          echo "${{ env.release_notes }}" >> change-log.txt
+          echo "" >> change-log.txt
           echo "## SHA256 Hash" >> change-log.txt
           echo '```' >> change-log.txt
-          sha256sum ${PACKAGE_ID}.s9pk >> change-log.txt
+          sha256sum ${S9PK} >> change-log.txt
           echo '```' >> change-log.txt
         shell: bash
 
@@ -56,8 +89,8 @@ jobs:
           prerelease: true
           body_path: change-log.txt
           files: |
-            ./${{ env.package_id }}.s9pk
-            ./${{ env.package_id }}.s9pk.sha256
+            ./${{ env.s9pk }}
+            ./${{ env.s9pk }}.sha256
 
       - name: Publish to Registry
         env:
@@ -68,5 +101,5 @@ jobs:
           if [[ -z "$S9USER" || -z "$S9PASS" || -z "$S9REGISTRY" ]]; then
             echo "Publish skipped: missing registry credentials."
           else
-            start-sdk publish https://$S9USER:$S9PASS@$S9REGISTRY ${{ env.package_id }}.s9pk
+            start-cli registry publish https://$S9USER:$S9PASS@$S9REGISTRY ${{ env.s9pk }}
           fi

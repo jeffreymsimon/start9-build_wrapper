@@ -1,5 +1,15 @@
-name: "StartOS SDK"
-description: "Provides start-cli"
+name: "StartOS 0.4.x SDK"
+description: "Provides start-cli for packaging services for StartOS 0.4.x"
+branding:
+  icon: "package"
+  color: "blue"
+
+inputs:
+  start-cli-version:
+    description: "Version of start-cli to install (default: latest)"
+    required: false
+    default: "latest"
+
 runs:
   using: "composite"
   steps:
@@ -8,7 +18,7 @@ runs:
       with:
         node-version: "22"
 
-    - name: Install dependencies
+    - name: Install system dependencies
       run: |
         sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list
         sudo apt-get update
@@ -17,13 +27,9 @@ runs:
           clang \
           libclang-dev \
           squashfs-tools-ng \
-          qemu-user-static
+          qemu-user-static \
+          jq
       shell: bash
-
-    - name: Setup Rust
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        toolchain: stable
 
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
@@ -38,21 +44,56 @@ runs:
       run: |
         ARCH=$(uname -m)
         OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+
+        # Map architecture names
         if [ "$ARCH" = "x86_64" ]; then
           ARCH_NAME="x86_64"
         elif [ "$ARCH" = "aarch64" ]; then
           ARCH_NAME="aarch64"
         fi
+
+        # Map OS names
         if [ "$OS" = "linux" ]; then
           OS_NAME="unknown-linux-musl"
         elif [ "$OS" = "darwin" ]; then
           OS_NAME="apple-darwin"
         fi
+
         BINARY_NAME="start-cli-${ARCH_NAME}-${OS_NAME}"
         ASSET_NAME="${BINARY_NAME}.tar.gz"
-        LATEST_RELEASE_URL=$(curl -s https://api.github.com/repos/Start9Labs/start-cli/releases/latest | jq -r '.assets[] | select(.name=="'$ASSET_NAME'") | .browser_download_url')
-        curl -L $LATEST_RELEASE_URL -o start-cli.tar.gz
+
+        # Get release URL (latest or specific version)
+        VERSION="${{ inputs.start-cli-version }}"
+        if [ "$VERSION" = "latest" ]; then
+          RELEASE_URL="https://api.github.com/repos/Start9Labs/start-cli/releases/latest"
+        else
+          RELEASE_URL="https://api.github.com/repos/Start9Labs/start-cli/releases/tags/${VERSION}"
+        fi
+
+        echo "Fetching start-cli from: $RELEASE_URL"
+        DOWNLOAD_URL=$(curl -s "$RELEASE_URL" | jq -r '.assets[] | select(.name=="'$ASSET_NAME'") | .browser_download_url')
+
+        if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
+          echo "Error: Could not find asset $ASSET_NAME in release"
+          exit 1
+        fi
+
+        echo "Downloading: $DOWNLOAD_URL"
+        curl -L "$DOWNLOAD_URL" -o start-cli.tar.gz
         tar xzf start-cli.tar.gz
-        sudo mv $BINARY_NAME /usr/local/bin/start-cli
+        sudo mv "$BINARY_NAME" /usr/local/bin/start-cli
         rm start-cli.tar.gz
+
+        echo "Installed start-cli:"
+        start-cli --version
+      shell: bash
+
+    - name: Initialize start-cli developer key
+      run: |
+        # Create .startos directory and initialize developer key if not present
+        mkdir -p ~/.startos
+        if [ ! -f ~/.startos/developer.key.pem ]; then
+          echo "Initializing StartOS developer key..."
+          start-cli init-key
+        fi
       shell: bash
